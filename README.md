@@ -1,5 +1,14 @@
-# Redyq
-<p align="center"><i>Though this project is small any contribution is welcome, be it in the form of ideas or code. So if you do wish to contribute feel free to use any of the github features at your disposal - issues, prs, etc</i></p>
+# Redyq   
+<div align="center">
+  <p align="center">
+    <i>Though this project is small any contribution is welcome, be it in the form of ideas or code. So if you do wish to contribute feel free to use any of the github features at your disposal - issues, prs, etc</i>
+  </p>
+  <p align="center">
+      
+[![crates.io](https://img.shields.io/crates/v/redyq?label=latest)](https://crates.io/crates/redyq) 
+      
+  </p>
+</div>
 
 
 ## What it is 
