@@ -29,8 +29,8 @@ impl Queue {
     }
 }
 
-pub fn create_queue(queue_name: String) -> Result<Queue, redis::RedisError> {
-    let client = redis::Client::open("redis://127.0.0.1:6379/")?;
+pub fn create_queue(queue_name: String, redis_url: String) -> Result<Queue, redis::RedisError> {
+    let client = redis::Client::open(redis_url)?;
     let fail_watcher_handle = start_fail_watcher(queue_name.to_string());
     let complete_watcher_handle = start_complete_watcher(queue_name.to_string());
     Ok(Queue {
