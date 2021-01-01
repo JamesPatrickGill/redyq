@@ -1,6 +1,8 @@
 use crate::job::Job;
 use redis::Commands;
 
+use log::info;
+
 struct QueueData {
     queue_name: String,
 }
@@ -8,14 +10,13 @@ struct QueueData {
 pub struct Queue {
     redis_client: redis::Client,
     queue_data: QueueData,
-    fail_watcher_handle: std::thread::JoinHandle<()>,
-    complete_watcher_handle: std::thread::JoinHandle<()>,
+    event_subscription_handle: std::thread::JoinHandle<Result<(), redis::RedisError>>,
 }
 
 impl Queue {
-    pub fn add(self, job_name: String, message: serde_json::Value) {
+    pub fn add(self, job_name: &str, message: serde_json::Value) {
         let job: Job = Job {
-            name: job_name,
+            name: job_name.to_owned(),
             message,
             retry_count: 0,
         };
@@ -26,54 +27,57 @@ impl Queue {
                 serde_json::to_string(&job).unwrap(),
             )
             .unwrap();
+        let _: () = con
+            .publish(
+                format!("{}.queue-events", self.queue_data.queue_name),
+                "job-added",
+            )
+            .unwrap();
     }
 }
 
-pub fn create_queue(queue_name: String, redis_url: String) -> Result<Queue, redis::RedisError> {
+pub fn create_queue(queue_name: &str, redis_url: &str) -> Result<Queue, redis::RedisError> {
     let client = redis::Client::open(redis_url)?;
-    let fail_watcher_handle = start_fail_watcher(queue_name.to_string());
-    let complete_watcher_handle = start_complete_watcher(queue_name.to_string());
+
+    let queue_already_exists: bool = client.get_connection()?.sismember("queues", queue_name)?;
+
+    if queue_already_exists {
+        info!("Existing queue with name \"{}\" found.", queue_name);
+    } else {
+        let queue_creation_successful: bool =
+            client.get_connection()?.sadd("queues", queue_name)?;
+        if queue_creation_successful {
+            info!("Queue with name \"{}\" created", queue_name);
+        }
+    }
+
+    let event_subscription_handle = event_subscriber(queue_name, redis_url)?;
+
     Ok(Queue {
-        fail_watcher_handle,
-        complete_watcher_handle,
-        queue_data: QueueData { queue_name },
+        event_subscription_handle,
+        queue_data: QueueData {
+            queue_name: queue_name.to_owned(),
+        },
         redis_client: client,
     })
 }
 
-fn start_fail_watcher(queue_name: String) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
-        let client = redis::Client::open("redis://127.0.0.1:6379/").unwrap();
-        let mut con = client.get_connection().unwrap();
-        loop {
-            let (_, job_string): (String, String) = con
-                .brpop(format!("{}{}", &queue_name, ".failed"), 0)
-                .unwrap();
-            let failed_job: Job = serde_json::from_str(&job_string).unwrap();
-            if failed_job.retry_count <= 5 {
-                let retried_job = Job {
-                    retry_count: failed_job.retry_count + 1,
-                    ..failed_job
-                };
-                let _: () = con
-                    .lpush(
-                        format!("{}{}", &queue_name, ".waiting"),
-                        serde_json::to_string(&retried_job).unwrap(),
-                    )
-                    .unwrap();
-            }
-        }
-    })
-}
+fn event_subscriber(
+    queue_name: &str,
+    redis_url: &str,
+) -> Result<std::thread::JoinHandle<Result<(), redis::RedisError>>, redis::RedisError> {
+    let client = redis::Client::open(redis_url)?;
+    let mut con = client.get_connection()?;
 
-fn start_complete_watcher(queue_name: String) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
-        let client = redis::Client::open("redis://127.0.0.1:6379/").unwrap();
-        let mut con = client.get_connection().unwrap();
+    let owned_queue_name = queue_name.to_owned();
+
+    Ok(std::thread::spawn(move || {
+        let mut pubsub = con.as_pubsub();
+        pubsub.subscribe(format!("{}.queue-events", owned_queue_name))?;
+
         loop {
-            let (_, _): (String, String) = con
-                .brpop(format!("{}{}", &queue_name, ".completed"), 0)
-                .unwrap();
+            let msg: String = pubsub.get_message()?.get_payload()?;
+            println!("{}", msg)
         }
-    })
+    }))
 }
