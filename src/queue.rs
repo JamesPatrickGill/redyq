@@ -1,16 +1,20 @@
+use crate::events::QueueEvent;
 use crate::job::Job;
-use redis::Commands;
+use redis::{Client, Commands};
+
+use std::str::FromStr;
 
 use log::info;
 
+#[derive(Clone, Copy)]
 struct QueueData {
-    queue_name: String,
+    queue_name: &'static str,
 }
 
+#[derive(Clone, Copy)]
 pub struct Queue {
-    redis_client: redis::Client,
+    redis_url: &'static str,
     queue_data: QueueData,
-    event_subscription_handle: std::thread::JoinHandle<Result<(), redis::RedisError>>,
 }
 
 impl Queue {
@@ -20,7 +24,10 @@ impl Queue {
             message,
             retry_count: 0,
         };
-        let mut con = self.redis_client.get_connection().unwrap();
+        let mut con = Client::open(self.redis_url)
+            .unwrap()
+            .get_connection()
+            .unwrap();
         let _: () = con
             .lpush(
                 format!("{}{}", self.queue_data.queue_name, ".waiting"),
@@ -30,13 +37,16 @@ impl Queue {
         let _: () = con
             .publish(
                 format!("{}.queue-events", self.queue_data.queue_name),
-                "job-added",
+                "AddWaiting",
             )
             .unwrap();
     }
 }
 
-pub fn create_queue(queue_name: &str, redis_url: &str) -> Result<Queue, redis::RedisError> {
+pub fn create_queue(
+    queue_name: &'static str,
+    redis_url: &'static str,
+) -> Result<Queue, redis::RedisError> {
     let client = redis::Client::open(redis_url)?;
 
     let queue_already_exists: bool = client.get_connection()?.sismember("queues", queue_name)?;
@@ -51,33 +61,35 @@ pub fn create_queue(queue_name: &str, redis_url: &str) -> Result<Queue, redis::R
         }
     }
 
-    let event_subscription_handle = event_subscriber(queue_name, redis_url)?;
+    event_subscriber(queue_name, redis_url);
 
     Ok(Queue {
-        event_subscription_handle,
-        queue_data: QueueData {
-            queue_name: queue_name.to_owned(),
-        },
-        redis_client: client,
+        queue_data: QueueData { queue_name },
+        redis_url,
     })
 }
 
-fn event_subscriber(
-    queue_name: &str,
-    redis_url: &str,
-) -> Result<std::thread::JoinHandle<Result<(), redis::RedisError>>, redis::RedisError> {
-    let client = redis::Client::open(redis_url)?;
-    let mut con = client.get_connection()?;
+fn event_subscriber(queue_name: &str, redis_url: &str) {
+    let client = redis::Client::open(redis_url).unwrap();
+    let mut con = client.get_connection().unwrap();
 
     let owned_queue_name = queue_name.to_owned();
 
-    Ok(std::thread::spawn(move || {
+    std::thread::spawn(move || {
         let mut pubsub = con.as_pubsub();
-        pubsub.subscribe(format!("{}.queue-events", owned_queue_name))?;
+        pubsub
+            .subscribe(format!("{}.queue-events", owned_queue_name))
+            .unwrap();
 
         loop {
-            let msg: String = pubsub.get_message()?.get_payload()?;
-            println!("{}", msg)
+            let msg: String = pubsub.get_message().unwrap().get_payload().unwrap();
+            let msg_as_queue_event: QueueEvent = QueueEvent::from_str(msg.as_str()).unwrap();
+
+            match msg_as_queue_event {
+                QueueEvent::AddWaiting => {
+                    println!("hmm");
+                }
+            };
         }
-    }))
+    });
 }
